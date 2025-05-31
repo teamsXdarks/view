@@ -1,0 +1,6 @@
+Flask
+asyncio
+aiohttp
+pycryptodome
+protobuf
+gunicorn
