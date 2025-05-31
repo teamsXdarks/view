@@ -116,7 +116,7 @@ def handle_requests():
          "Region": region,
          "Views_Success": views_sent,
          "Views_Failed": views_failed,
-         "Developer": "@teamXdarks",
+         "Developer": "@teamXdarkss",
 }), 200
 
 if __name__ == "__main__":
