@@ -1,98 +1,123 @@
-from flask import Flask, jsonify
-import aiohttp
 import asyncio
+import binascii
 import json
-from byte import encrypt_api, Encrypt_ID
+import random
+from flask import Flask, request, jsonify
+import aiohttp
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+import uid_generator_pb2  # Make sure compiled from your .proto file
 
 app = Flask(__name__)
 
-def load_tokens(server_name):
-    try:
-        if server_name == "IND":
-            path = "token_ind.json"
-        elif server_name in {"BR", "US", "SAC", "NA"}:
-            path = "token_br.json"
-        else:
-            path = "token_bd.json"
+def load_tokens():
+    with open("token_ind.json", "r") as f:
+        tokens = json.load(f)
+    return random.sample(tokens, min(100, len(tokens)))
 
-        with open(path, "r") as f:
-            data = json.load(f)
+def create_protobuf(krishna, teamXdarks):
+    message = uid_generator_pb2.uid_generator()
+    message.krishna = krishna
+    message.teamXdarks = teamXdarks
+    return message.SerializeToString()
 
-        tokens = [item["token"] for item in data if "token" in item and item["token"] not in ["", "N/A"]]
-        return tokens
-    except Exception as e:
-        app.logger.error(f"❌ Token load error for {server_name}: {e}")
-        return []
+def protobuf_to_hex(protobuf_data):
+    return binascii.hexlify(protobuf_data).decode()
 
-def get_url(server_name):
-    if server_name == "IND":
-        return "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
-    elif server_name in {"BR", "US", "SAC", "NA"}:
-        return "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
-    else:
-        return "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
+def encrypt_aes(hex_data):
+    key = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
+    iv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    padded_data = pad(bytes.fromhex(hex_data), AES.block_size)
+    encrypted_data = cipher.encrypt(padded_data)
+    return binascii.hexlify(encrypted_data).decode()
 
-async def visit(session, url, token, uid, data):
+async def send_request(encrypted_uid, token, url):
+    edata = bytes.fromhex(encrypted_uid)
     headers = {
-        "ReleaseVersion": "OB49",
-        "X-GA": "v1 1",
-        "Authorization": f"Bearer {token}",
-        "Host": url.replace("https://", "").split("/")[0]
+        'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
+        'Connection': "Keep-Alive",
+        'Accept-Encoding': "gzip",
+        'Authorization': f"Bearer {token}",
+        'Content-Type': "application/x-www-form-urlencoded",
+        'Expect': "100-continue",
+        'X-Unity-Version': "2018.4.11f1",
+        'X-GA': "v1 1",
+        'ReleaseVersion': "OB49"
     }
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, data=edata, headers=headers) as response:
+                await response.read()
+                return response.status == 200
+        except Exception as e:
+            print(f"Request error: {e}")
+            return False
+
+async def send_multiple_requests(uid, tokens, url):
+    krishna = int(uid)
+    protobuf_data = create_protobuf(krishna, 1)
+    encrypted_uid = encrypt_aes(protobuf_to_hex(protobuf_data))
+
+    tasks = []
+    for token in tokens:
+        for _ in range(10):
+            tasks.append(send_request(encrypted_uid, token["token"], url))
+
+    results = await asyncio.gather(*tasks)
+    return sum(results), len(results) - sum(results)
+
+async def fetch_player_info(uid, server_name):
+    info_url = f"https://info-leader-krishna-api.vercel.app/profile_info?uid={uid}&region={server_name.lower()}"
+    name = "Unknown"
+    level = 0
+    region_info = server_name.upper()
+
     try:
-        async with session.post(url, headers=headers, data=data, ssl=False) as resp:
-            if resp.status == 200:
-                await resp.read()
-                return True
-            else:
-                return False
-    except:
-        return False
+        async with aiohttp.ClientSession() as session:
+            async with session.get(info_url) as res:
+                if res.status == 200:
+                    try:
+                        raw = await res.text()
+                        data = json.loads(raw)
+                        if "AccountInfo" in data:
+                            acc = data["AccountInfo"]
+                            name = acc.get("AccountName", name)
+                            level = acc.get("AccountLevel", level)
+                            region_info = acc.get("AccountRegion", region_info)
+                    except Exception as json_err:
+                        print(f"[JSON ERROR] {json_err}")
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch player info: {e}")
 
-async def send_until_200_success(tokens, uid, server_name, target_success=200):
-    url = get_url(server_name)
-    connector = aiohttp.TCPConnector(limit=0)
-    total_success = 0
-    total_sent = 0
+    return name, level, region_info
 
-    async with aiohttp.ClientSession(connector=connector) as session:
-        encrypted = encrypt_api("08" + Encrypt_ID(str(uid)) + "1801")
-        data = bytes.fromhex(encrypted)
+@app.route('/send_requests', methods=['GET'])
+def handle_requests():
+    uid = request.args.get("uid")
+    server_name = request.args.get("server_name", "").upper()
 
-        while total_success < target_success:
-            batch_size = min(target_success - total_success, 200)  # Send max 200 or remaining needed
-            tasks = [
-                asyncio.create_task(visit(session, url, tokens[(total_sent + i) % len(tokens)], uid, data))
-                for i in range(batch_size)
-            ]
-            results = await asyncio.gather(*tasks)
-            batch_success = sum(1 for r in results if r)
-            total_success += batch_success
-            total_sent += batch_size
+    if not uid or server_name != "IND":
+        return jsonify({"error": "Only IND server is supported"}), 400
 
-            print(f"Batch sent: {batch_size}, Success in batch: {batch_success}, Total success so far: {total_success}")
+    url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
+    selected_tokens = load_tokens()
 
-    return total_success, total_sent
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-@app.route('/<string:server>/<int:uid>', methods=['GET'])
-def send_visits(server, uid):
-    server = server.upper()
-    tokens = load_tokens(server)
+    views_sent, views_failed = loop.run_until_complete(send_multiple_requests(uid, selected_tokens, url))
+    name, level, region = loop.run_until_complete(fetch_player_info(uid, server_name))
 
-    if not tokens:
-        return jsonify({"message": "❌ No valid tokens found"}), 500
-
-    print(f"🚀 Sending visits to UID: {uid} using {len(tokens)}")
-    print("Waiting for total 1000 successful visits...")
-
-    total_success, total_sent = asyncio.run(send_until_200_success(
-        tokens, uid, server,
-        target_success=1000
-    ))
-
-    return jsonify({
-        "message": f"✅ Sent {total_success} successful visits in total."
-    }), 200
+    return jsonify({        
+         "UID": uid,
+         "Player Name": name,
+         "Level": level,
+         "Region": region,
+         "Views_Success": views_sent,
+         "Views_Failed": views_failed,
+         "Developer": "@teamXdarks",
+}), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=50099)
+    app.run(debug=True, port=5003)
