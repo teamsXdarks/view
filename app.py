@@ -60,7 +60,7 @@ async def send_until_200_success(tokens, uid, server_name, target_success=200):
         data = bytes.fromhex(encrypted)
 
         while total_success < target_success:
-            batch_size = min(target_success - total_success, 1000)  # Send max 200 or remaining needed
+            batch_size = min(target_success - total_success, 200)  # Send max 200 or remaining needed
             tasks = [
                 asyncio.create_task(visit(session, url, tokens[(total_sent + i) % len(tokens)], uid, data))
                 for i in range(batch_size)
