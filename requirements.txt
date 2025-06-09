@@ -1,4 +1,6 @@
 Flask
-Requests
-pycryptodome
+asyncio
 aiohttp
+pycryptodome
+protobuf
+gunicorn
