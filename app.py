@@ -68,7 +68,7 @@ async def send_multiple_requests(uid, tokens, url):
     return sum(results), len(results) - sum(results)
 
 async def fetch_player_info(uid, server_name):
-    info_url = f"https://info-leader-krishna-api.vercel.app/profile_info?uid={uid}&region={server_name.lower()}"
+    info_url = f"https://info-silk.vercel.app/profile_info?uid={uid}&region={server_name.lower()}"
     name = "Unknown"
     level = 0
     region_info = server_name.upper()
